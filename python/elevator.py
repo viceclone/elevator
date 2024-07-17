@@ -1,107 +1,91 @@
-import aioconsole
 import asyncio
+from enum import Enum
 
 class Elevator:
+    class State(Enum):
+        IDLE = 0
+        STOPPED = 1
+        MOVING = 2
+    
+    class Direction(Enum):
+        UP = 1
+        DOWN = -1
+    
     def __init__(self, id, floors, speed):
         self.id = id
         self.floors = floors
         self.speed = speed
         self.current_floor = 0
-        self.target_floor = 0
-        self.target_floors_set = set()
-        self.moving = False
-        self.move_trigger = asyncio.Event()
-        self.stop_trigger = asyncio.Event()
+        self.state = Elevator.State.IDLE
+        self.current_direction = Elevator.Direction.UP
+        self.current_destination = 0
+        self.destination_floors = set()
+        self.new_destination_event = asyncio.Event()
         self.lock = asyncio.Lock()
     
-    def should_stop(self):
-        return self.target_floor == self.current_floor
+    async def fetch_new_destination(self):
+        while True:
+            await self.new_destination_event.wait()
+            async with self.lock:
+                self.set_next_destination()
+                self.new_destination_event.clear()
+    
+    def set_next_destination(self):
+        if self.current_direction == Elevator.Direction.UP:
+            upper_floors = [floor for floor in self.destination_floors if floor > self.current_floor]
+            if upper_floors:
+                self.current_destination = min(upper_floors)
+            else:
+                self.current_direction = Elevator.Direction.DOWN
+                lower_floors = [floor for floor in self.destination_floors if floor < self.current_floor]
+                if lower_floors:
+                    self.current_destination = max(lower_floors)
+        else:
+            lower_floors = [floor for floor in self.destination_floors if floor < self.current_floor]
+            if lower_floors:
+                self.current_destination = max(lower_floors)
+            else:
+                self.current_direction = Elevator.Direction.UP
+                upper_floors = [floor for floor in self.destination_floors if floor > self.current_floor]
+                if upper_floors:
+                    self.current_destination = min(upper_floors)
+    
+    async def add_new_destination(self, floor):
+        async with self.lock:
+            self.destination_floors.add(floor)
+            self.new_destination_event.set()
+
+    async def stop(self):
+        print(f'--Elevator {self.id} has arrived at floor {self.current_floor}')
+        self.state = Elevator.State.STOPPED
+        self.destination_floors.remove(self.current_destination)
+        if self.destination_floors:
+            self.set_next_destination()
+            await self.move()
+        else:
+            await self.idle()
 
     async def move(self):
-        while self.current_floor != self.target_floor:
-            if self.current_floor < self.target_floor:
-                self.current_floor += 1
-            else:
-                self.current_floor -= 1
-            print(f'Elevator {self.id} is at floor {self.current_floor}')
+        self.state = Elevator.State.MOVING
+        # TODO: Implement the move method
+        while self.current_floor != self.current_destination:
+            async with self.lock:
+                if self.current_floor < self.current_destination:
+                    self.current_floor += 1
+                else:
+                    self.current_floor -= 1
+                print(f'Elevator {self.id} is at floor {self.current_floor}')
             await asyncio.sleep(1 / self.speed)
+        await self.stop()
 
-        async with self.lock:
-            self.target_floors_set.remove(self.target_floor)
-            self.target_floor = min(self.target_floors_set) if self.target_floors_set else self.current_floor
-
-        print(f'--Elevator {self.id} has arrived at floor {self.current_floor}')
-
-        if not self.target_floors_set:
-            self.move_trigger.clear()
-
-    def update_target_floor(self, new_target_floor):
-        self.target_floors_set.add(new_target_floor)
-        if self.current_floor < new_target_floor and new_target_floor < self.target_floor:
-            self.target_floor = new_target_floor
-        elif self.current_floor > new_target_floor and new_target_floor > self.target_floor:
-            self.target_floor = new_target_floor
-        elif self.current_floor == self.target_floor:
-            self.target_floor = new_target_floor
-
-    async def add_new_target_floor(self, floor):
-        async with self.lock:
-            self.update_target_floor(floor)
-            if not self.move_trigger.is_set():
-                self.move_trigger.set()
+    async def idle(self):
+        print(f'Elevator {self.id} is idle')
+        self.state = Elevator.State.IDLE
+        await self.new_destination_event.wait()
+        await self.move()
 
     async def run(self):
-        while True:
-            await self.move_trigger.wait()
-            # self.target_floor = self.target_floors_set.pop(0)
-            await self.move()
-
-class ControlCenter:
-    def __init__(self, elevators):
-        self.elevators = elevators
-        self.elevator_tasks = []
-
-    async def add_new_target_floor(self, elevator_id, floor):
-        await self.elevators[elevator_id].add_new_target_floor(floor)
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(self.fetch_new_destination())
+            tg.create_task(self.idle())
     
-    async def call_elevator(self, floor):
-        closest_distance = float('inf')
-        # get the closest elevator
-        for i, elevator in enumerate(self.elevators):
-            distance = abs(elevator.current_floor - floor)
-            if distance < closest_distance:
-                closest_distance = distance
-                closest_elevator = i
-        self.elevators[closest_elevator].add_new_target_floor(floor)
-        # add the target floor to the elevator
-        pass
-
-    def parse_command(self, raw_command):
-        # rawcommand: <elevator_id> <floor>
-        elevator_id, floor = raw_command.split()
-        # cast to int
-        return int(elevator_id), int(floor)
-
-    async def run_command_board(self):
-        stdin, stdout = await aioconsole.get_standard_streams()
-        async for line in stdin:
-            elevator_id, floor = self.parse_command(line)
-            await self.add_new_target_floor(elevator_id, floor)
-            stdout.write(line)
-
-    async def run(self):
-        async with asyncio.TaskGroup() as group:
-            task = group.create_task(self.run_command_board())
-            for elevator in self.elevators:
-                task = group.create_task(elevator.run())
-                self.elevator_tasks.append(task)
-
-
-async def main():
-    elevator0 = Elevator(0, 10, 0.5)
-    elevator1 = Elevator(1, 10, 0.5)
-    control_center = ControlCenter([elevator0, elevator1])
-    await control_center.run()
-
-if __name__ == '__main__':
-    asyncio.run(main())
