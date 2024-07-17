@@ -1,15 +1,15 @@
 import asyncio
 from enum import Enum
 
+class Direction(Enum):
+        UP = 1
+        DOWN = -1
+
 class Elevator:
     class State(Enum):
         IDLE = 0
         STOPPED = 1
         MOVING = 2
-    
-    class Direction(Enum):
-        UP = 1
-        DOWN = -1
     
     def __init__(self, id, floors, speed):
         self.id = id
@@ -17,8 +17,8 @@ class Elevator:
         self.speed = speed
         self.current_floor = 0
         self.state = Elevator.State.IDLE
-        self.current_direction = Elevator.Direction.UP
-        self.current_destination = 0
+        self.current_direction = Direction.UP
+        self.current_destination = None
         self.destination_floors = set()
         self.new_destination_event = asyncio.Event()
         self.lock = asyncio.Lock()
@@ -31,12 +31,15 @@ class Elevator:
                 self.new_destination_event.clear()
     
     def set_next_destination(self):
-        if self.current_direction == Elevator.Direction.UP:
+        if self.current_destination != None:
+            self.destination_floors.add(self.current_destination)
+
+        if self.current_direction == Direction.UP:
             upper_floors = [floor for floor in self.destination_floors if floor > self.current_floor]
             if upper_floors:
                 self.current_destination = min(upper_floors)
             else:
-                self.current_direction = Elevator.Direction.DOWN
+                self.current_direction = Direction.DOWN
                 lower_floors = [floor for floor in self.destination_floors if floor < self.current_floor]
                 if lower_floors:
                     self.current_destination = max(lower_floors)
@@ -45,10 +48,12 @@ class Elevator:
             if lower_floors:
                 self.current_destination = max(lower_floors)
             else:
-                self.current_direction = Elevator.Direction.UP
+                self.current_direction = Direction.UP
                 upper_floors = [floor for floor in self.destination_floors if floor > self.current_floor]
                 if upper_floors:
                     self.current_destination = min(upper_floors)
+        
+        self.destination_floors.remove(self.current_destination)
     
     async def add_new_destination(self, floor):
         async with self.lock:
@@ -57,8 +62,13 @@ class Elevator:
 
     async def stop(self):
         print(f'--Elevator {self.id} has arrived at floor {self.current_floor}')
+        print(f'--The door of {self.id} will remain open for 5 seconds')
         self.state = Elevator.State.STOPPED
-        self.destination_floors.remove(self.current_destination)
+        # self.destination_floors.remove(self.current_destination)
+        self.current_destination = None
+
+        await asyncio.sleep(5)
+        print(f'--The door of {self.id} is closing')
         if self.destination_floors:
             self.set_next_destination()
             await self.move()
